@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vibe Voxel Studio | Vibecoding</title>
+    
+    <!-- CSS pre styling rozhrania -->
+    <style>
+        :root {
+            --bg: #0a0a0a;
+            --accent: #ff00ea; /* Neonová ružová pre "vibe" */
+            --panel: rgba(25, 25, 25, 0.9);
+        }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: var(--bg);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* POVINNÉ: Tlačidlo Späť na portál */
+        .back-btn {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+            padding: 12px 24px;
+            background: var(--panel);
+            border: 2px solid var(--accent);
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            transition: 0.3s;
+            backdrop-filter: blur(5px);
+        }
+        .back-btn:hover {
+            background: var(--accent);
+            color: var(--bg);
+            box-shadow: 0 0 20px var(--accent);
+        }
+
+        /* Ovládací panel */
+        .ui-panel {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--panel);
+            padding: 15px 25px;
+            border-radius: 15px;
+            border: 1px solid #333;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            backdrop-filter: blur(10px);
+            z-index: 10;
+        }
+
+        .panel-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #888;
+        }
+
+        .color-palette {
+            display: flex;
+            gap: 10px;
+        }
+
+        .color-btn {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .color-btn.active {
+            border-color: white;
+            transform: scale(1.1);
+        }
+
+        .tool-btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 1px solid #666;
+            color: #aaa;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            transition: 0.2s;
+        }
+        .tool-btn.active {
+            border-color: var(--accent);
+            color: white;
+            background: rgba(255, 0, 234, 0.1);
+        }
+
+        .instructions {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            text-align: right;
+            color: #666;
+            font-size: 0.8rem;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- POVINNÉ: Tlačidlo Späť podľa zadania -->
+    <a href="javascript:history.back();" class="back-btn">
+        ← Späť na portál
+    </a>
+
+    <div class="instructions">
+        Ľavé klik: Pridať/Zmazať | Pravé klik: Otáčať<br>
+        Taž myš: Posunúť kameru
+    </div>
+
+    <!-- Tu sa vykreslí 3D scéna -->
+    <div id="container"></div>
+
+    <!-- Ovládací panel -->
+    <div class="ui-panel">
+        <div>
+            <div class="panel-label">Farba kocky</div>
+            <div class="color-palette" id="color-palette"></div>
+        </div>
+        <div>
+            <div class="panel-label">Nástroj</div>
+            <div style="display: flex; gap: 5px;">
+                <button class="tool-btn active" id="add-btn">Pridať</button>
+                <button class="tool-btn" id="delete-btn">Zmazať</button>
+            </div>
+        </div>
+        <div style="display: flex; gap: 5px;">
+            <button id="save-json-btn" style="background:var(--accent); border:none; padding:10px 15px; border-radius:5px; color:white; font-weight:bold; cursor:pointer; font-size:0.8rem;">Uložiť JSON</button>
+            <button id="load-json-btn" style="background:var(--accent); border:none; padding:10px 15px; border-radius:5px; color:white; font-weight:bold; cursor:pointer; font-size:0.8rem;">Načíatať JSON</button>
+            <button id="export-3d-btn" style="background:var(--accent); border:none; padding:10px 15px; border-radius:5px; color:white; font-weight:bold; cursor:pointer; font-size:0.8rem;">Export 3D</button>
+            <button id="import-3d-btn" style="background:var(--accent); border:none; padding:10px 15px; border-radius:5px; color:white; font-weight:bold; cursor:pointer; font-size:0.8rem;">Import 3D</button>
+        </div>
+    </div>
+    
+    <!-- Skryté file inputy -->
+    <input type="file" id="json-file-input" accept=".json" style="display:none;">
+    <input type="file" id="gltf-file-input" accept=".gltf,.glb" style="display:none;">
+
+    <!-- Načítanie Three.js a modulov z CDN -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <!-- Logika aplikácie -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        let scene, camera, renderer, controls;
+        let voxelGeometry, voxelMaterial, voxels = [];
+        let raycaster, mouse = new THREE.Vector2();
+        
+        let isDeleteMode = false;
+        let currentVoxelColor = new THREE.Color("#ff00ea");
+        
+        // Flagi pre kontrolu kamery
+        let isCameraRotating = false;
+        let lastMouseDownPos = new THREE.Vector2();
+
+        // Dáta pre uloženie (len ako in-memory pre tento wow efekt)
+        let placedVoxels = []; 
+
+        init();
+        animate();
+
+        function init() {
+            // 1. Nastavenie Scény, Kamery, Renderera
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color("#0a0a0a");
+            scene.fog = new THREE.FogExp2("#0a0a0a", 0.01); // Jemná hmla pre hĺbku
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 2000);
+            camera.position.set(20, 20, 20); // Počiatočný pohľad z nadhľadu
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            // 2. Svetlá (Directional a Ambient)
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
+            directionalLight.position.set(10, 20, 10);
+            scene.add(directionalLight);
+
+            // 3. Pomocná Mriežka (Grid)
+            const gridHelper = new THREE.GridHelper(50, 50, "#222", "#1a1a1a");
+            gridHelper.position.y = -0.51; // Pod kockami
+            scene.add(gridHelper);
+
+            // 4. Základná podlaha (Neviditeľná pre raycasting)
+            const geometryGround = new THREE.PlaneGeometry(50, 50);
+            geometryGround.rotateX(-Math.PI / 2);
+            const planeGround = new THREE.Mesh(geometryGround, new THREE.MeshBasicMaterial({ visible: false }));
+            planeGround.position.y = -0.51; // Pod kockami (tesne pod nimi)
+            scene.add(planeGround);
+            voxels.push(planeGround); // Pridáme na zoznam pre kolízie
+
+            // 5. Geometria a Material pre voxely (Reusovanie je dôležité!)
+            voxelGeometry = new THREE.BoxGeometry(1, 1, 1);
+            voxelMaterial = new THREE.MeshLambertMaterial({ color: currentVoxelColor }); // Lambert pre tieňovanie
+
+            // 6. Kontrola Kamery
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // Hladký pohyb
+            controls.zoomSpeed = 0.3; // Znížená citlivosť zoomizovania
+            controls.enableZoom = false; // Vypnúť scroll zoom
+            controls.mouseButtons = {
+                LEFT: -1, // Vypnut LEFT tlacidlo pre OrbitControls
+                MIDDLE: -1,
+                RIGHT: THREE.MOUSE.ROTATE
+            };
+            
+            // Detekcia rotácie kamery
+            controls.addEventListener('change', () => {
+                isCameraRotating = true;
+            });
+
+            // 7. Raycaster a Interakcia
+            raycaster = new THREE.Raycaster();
+            window.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('resize', onWindowResize);
+
+            // 8. Nastavenie UI
+            setupPalette();
+            setupTools();
+        }
+
+        // --- Logika Vykresľovania a Voxelov ---
+
+        function onMouseDown(event) {
+            event.preventDefault();
+            
+            lastMouseDownPos.x = event.clientX;
+            lastMouseDownPos.y = event.clientY;
+            isCameraRotating = false;
+        }
+
+        function onMouseUp(event) {
+            // Resetujeme flag na začiatku
+            isCameraRotating = false;
+            
+            // Skontrolujeme či klik bol na GUI elemente
+            const isClickOnGUI = event.target.closest('.ui-panel') || event.target.closest('.back-btn');
+            if (isClickOnGUI) {
+                return;
+            }
+            
+            // Skontrolujeme či bol pohyb myši počas stisku (rotácia kamery)
+            const movedDistance = Math.sqrt(
+                Math.pow(event.clientX - lastMouseDownPos.x, 2) + 
+                Math.pow(event.clientY - lastMouseDownPos.y, 2)
+            );
+            
+            // Ak bol pohyb väčší ako 3px, to bola rotácia - skipneme pokladanie
+            if (movedDistance > 3) {
+                return;
+            }
+
+            // Vypočítame polohu myši (normalizované súradnice -1 až 1)
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            // Vyžiadame lúč
+            raycaster.setFromCamera(mouse, camera);
+
+            // Nájdeme kolízie len so zoznamom voxelov (nie s celou scénou)
+            const intersects = raycaster.intersectObjects(voxels);
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+
+                if (isDeleteMode) {
+                    // Režim Mazania
+                    if (intersect.object !== voxels[0]) { // Nemôžeme zmazať podlahu
+                        scene.remove(intersect.object);
+                        const index = voxels.indexOf(intersect.object);
+                        if (index > -1) voxels.splice(index, 1);
+                        // Zmažeme z dát pre uloženie
+                        placedVoxels = placedVoxels.filter(v => v.position.x !== intersect.object.position.x || v.position.y !== intersect.object.position.y || v.position.z !== intersect.object.position.z);
+                    }
+                } else {
+                    // Režim Pridávania - VYLEPŠENÁ LOGIKA
+                    // Umiestnenie presne vedľa existujúcej kocky bez medzery
+                    const newPosition = new THREE.Vector3(
+                        Math.round(intersect.point.x + intersect.face.normal.x * 0.5),
+                        Math.round(intersect.point.y + intersect.face.normal.y * 0.5),
+                        Math.round(intersect.point.z + intersect.face.normal.z * 0.5)
+                    );
+                    
+                    // Skontrolujeme, či tam už niečo nie je
+                    const index_to_check = voxels.findIndex(v => v.position.equals(newPosition));
+                    if (index_to_check === -1) { 
+                        const voxel = new THREE.Mesh(voxelGeometry, new THREE.MeshLambertMaterial({ color: currentVoxelColor }));
+                        voxel.position.copy(newPosition);
+                        scene.add(voxel);
+                        voxels.push(voxel);
+                        // Pridáme do dát pre uloženie
+                        placedVoxels.push({ position: { x: newPosition.x, y: newPosition.y, z: newPosition.z }, color: "#" + currentVoxelColor.getHexString() });
+                    }
+                }
+            }
+            
+            isCameraRotating = false;
+        }
+
+        function setupPalette() {
+            const colors = ["#ff00ea", "#00f2ff", "#ffae00", "#76ff03", "#e0e0e0"];
+            const palette = document.getElementById("color-palette");
+
+            colors.forEach(color => {
+                const btn = document.createElement("button");
+                btn.className = "color-btn";
+                btn.style.backgroundColor = color;
+                if (color === "#ff00ea") btn.classList.add("active");
+                btn.onclick = () => {
+                    currentVoxelColor.set(color);
+                    document.querySelectorAll(".color-btn").forEach(b => b.classList.remove("active"));
+                    btn.classList.add("active");
+                };
+                palette.appendChild(btn);
+            });
+        }
+
+        function setupTools() {
+            const addBtn = document.getElementById("add-btn");
+            const deleteBtn = document.getElementById("delete-btn");
+            const saveJsonBtn = document.getElementById("save-json-btn");
+            const loadJsonBtn = document.getElementById("load-json-btn");
+            const export3dBtn = document.getElementById("export-3d-btn");
+            const import3dBtn = document.getElementById("import-3d-btn");
+
+            addBtn.onclick = () => { isDeleteMode = false; addBtn.classList.add("active"); deleteBtn.classList.remove("active"); };
+            deleteBtn.onclick = () => { isDeleteMode = true; deleteBtn.classList.add("active"); addBtn.classList.remove("active"); };
+            
+            // Uložiť JSON - Stiahnuť súbor
+            saveJsonBtn.onclick = () => {
+                const data = JSON.stringify(placedVoxels, null, 2);
+                const blob = new Blob([data], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'voxel-model.json';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+            
+            // Načítať JSON - Otvoriť file dialog
+            loadJsonBtn.onclick = () => {
+                document.getElementById('json-file-input').click();
+            };
+            
+            // Export 3D (glTF)
+            export3dBtn.onclick = () => {
+                const exporter = new GLTFExporter();
+                
+                // Vytvoríme dočasnú skupinu len s voxelmi (bez podlahy a gridu)
+                const modelGroup = new THREE.Group();
+                for (let i = 1; i < voxels.length; i++) {
+                    const voxelClone = voxels[i].clone();
+                    modelGroup.add(voxelClone);
+                }
+                
+                exporter.parse(modelGroup, (gltf) => {
+                    const blob = new Blob([JSON.stringify(gltf)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'voxel-model.gltf';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }, { binary: false });
+            };
+            
+            // Import 3D - Otvoriť file dialog
+            import3dBtn.onclick = () => {
+                document.getElementById('gltf-file-input').click();
+            };
+            
+            // File input handlers
+            document.getElementById('json-file-input').onchange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        try {
+                            const data = JSON.parse(event.target.result);
+                            placedVoxels = data;
+                            loadVoxelsFromData();
+                            alert('Model JSON bol úspešne načítaný!');
+                        } catch (err) {
+                            alert('Chyba pri načítaní JSON súboru: ' + err.message);
+                        }
+                    };
+                    reader.readAsText(file);
+                }
+            };
+            
+            document.getElementById('gltf-file-input').onchange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        try {
+                            const loader = new GLTFLoader();
+                            loader.parse(event.target.result, '', (gltf) => {
+                                // Vyčistíme scénu od starých voxelov (okrem podlahy a griду)
+                                for (let i = voxels.length - 1; i > 0; i--) {
+                                    scene.remove(voxels[i]);
+                                    voxels.pop();
+                                }
+                                placedVoxels = [];
+                                
+                                // Pridáme načítané objekty zo glTF
+                                gltf.scene.traverse((child) => {
+                                    if (child instanceof THREE.Mesh && child !== voxels[0]) {
+                                        scene.add(child);
+                                        voxels.push(child);
+                                        // Uložíme do placedVoxels
+                                        placedVoxels.push({
+                                            position: { x: child.position.x, y: child.position.y, z: child.position.z },
+                                            color: "#" + (child.material.color ? child.material.color.getHexString() : "ff00ea")
+                                        });
+                                    }
+                                });
+                                
+                                alert('Model 3D bol úspešne načítaný!');
+                            });
+                        } catch (err) {
+                            alert('Chyba pri načítaní 3D súboru: ' + err.message);
+                        }
+                    };
+                    reader.readAsArrayBuffer(file);
+                }
+            };
+        }
+        
+        // Funkcia na načítanie voxelov z JSON dát
+        function loadVoxelsFromData() {
+            // Vyčistíme scénu od starých voxelov (okrem podlahy a gridu)
+            for (let i = voxels.length - 1; i > 0; i--) {
+                scene.remove(voxels[i]);
+                voxels.pop();
+            }
+            
+            // Pridáme nové voxely zo dát
+            placedVoxels.forEach(voxelData => {
+                const voxel = new THREE.Mesh(voxelGeometry, new THREE.MeshLambertMaterial({ color: voxelData.color }));
+                voxel.position.set(voxelData.position.x, voxelData.position.y, voxelData.position.z);
+                scene.add(voxel);
+                voxels.push(voxel);
+            });
+        }
+
+        // --- Standardné Three.js Funkcie ---
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); // Potrebné pre damping
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
