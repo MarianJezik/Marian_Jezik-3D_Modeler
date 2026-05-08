@@ -126,7 +126,7 @@
 
     <div class="instructions">
         Ľavé klik: Pridať/Zmazať | Pravé klik: Otáčať<br>
-        Taž myš: Posunúť kameru
+        CTRL + Ťah: Kreslenie čiary kociek | Taž myš: Posunúť kameru
     </div>
 
     <!-- Tu sa vykreslí 3D scéna -->
@@ -184,9 +184,22 @@
         // Flagi pre kontrolu kamery
         let isCameraRotating = false;
         let lastMouseDownPos = new THREE.Vector2();
-
-        // Dáta pre uloženie (len ako in-memory pre tento wow efekt)
-        let placedVoxels = []; 
+        
+        // Premenné pre CTRL+drag (kreslenie čiary kociek)
+        let isCtrlPressed = false;
+        let isDrawingLine = false;
+        let lineStartPoint = null;
+        let lineNormal = null;
+        let lineDirection = new THREE.Vector3();
+        let lockedDirection = null; // Lock smer po prvom pohybe
+        let temporaryVoxels = []; // Dočasné kocky
+        
+        // Dáta pre uloženie
+        let placedVoxels = [];
+        
+        // Zvýraznenie - highlight pri hoveri
+        let highlightedVoxel = null;
+        let highlightedVoxelOriginalColor = null;
 
         init();
         animate();
@@ -248,7 +261,22 @@
             // 7. Raycaster a Interakcia
             raycaster = new THREE.Raycaster();
             window.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mousemove', onMouseMove);
             window.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('keydown', (e) => { 
+                if (e.key === 'Control') isCtrlPressed = true; 
+            });
+            window.addEventListener('keyup', (e) => { 
+                if (e.key === 'Control') {
+                    isCtrlPressed = false;
+                    // Ak je CTRL pustený počas kreslenia, zmažeme dočasné kocky
+                    if (isDrawingLine) {
+                        clearTemporaryVoxels();
+                        isDrawingLine = false;
+                        lockedDirection = null;
+                    }
+                }
+            });
             window.addEventListener('resize', onWindowResize);
 
             // 8. Nastavenie UI
@@ -264,10 +292,158 @@
             lastMouseDownPos.x = event.clientX;
             lastMouseDownPos.y = event.clientY;
             isCameraRotating = false;
+            
+            // CTRL+ľavé tlačidlo - kreslenie čiary kociek
+            if (isCtrlPressed && event.button === 0) {
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(voxels);
+                
+                if (intersects.length > 0) {
+                    const intersect = intersects[0];
+                    if (!isDeleteMode && intersect.object !== voxels[0]) {
+                        isDrawingLine = true;
+                        // Vypočítame pozíciu rovnako ako pri normálnom kliknutí
+                        // - posunutie o normál a zaokrúhlenie
+                        lineStartPoint = new THREE.Vector3(
+                            Math.round(intersect.point.x + intersect.face.normal.x * 0.5),
+                            Math.round(intersect.point.y + intersect.face.normal.y * 0.5),
+                            Math.round(intersect.point.z + intersect.face.normal.z * 0.5)
+                        );
+                        lineNormal = intersect.face.normal.clone();
+                    }
+                }
+            }
+        }
+        
+        function onMouseMove(event) {
+            // Zvýraznenie kocky pri hoveri - ALE NIE počas kreslenia čiary
+            if (!isDrawingLine) {
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(voxels);
+                
+                if (intersects.length > 0) {
+                    const intersect = intersects[0];
+                    if (intersect.object !== voxels[0]) { // Nie podlaha
+                        if (highlightedVoxel !== intersect.object) {
+                            // Vrátime pôvodnú farbu predchádzajúcej kocky
+                            if (highlightedVoxel !== null) {
+                                highlightedVoxel.material.emissive.setHex(0x000000);
+                            }
+                            // Zvýrazníme novú kocku
+                            highlightedVoxel = intersect.object;
+                            highlightedVoxel.material.emissive.setHex(0x00ff88);
+                        }
+                    }
+                } else {
+                    // Myš nie je na žiadnej kocke - vrátíme zvýraznenie
+                    if (highlightedVoxel !== null) {
+                        highlightedVoxel.material.emissive.setHex(0x000000);
+                        highlightedVoxel = null;
+                    }
+                }
+            }
+            
+            // Kreslenie čiary kociek pri CTRL+drag
+            if (isDrawingLine && isCtrlPressed && !isDeleteMode) {
+                // Vypočítame pohyb myši v screen priestore
+                const screenDeltaX = event.clientX - lastMouseDownPos.x;
+                const screenDeltaY = event.clientY - lastMouseDownPos.y;
+                
+                // Ak je pohyb príliš malý, preskočíme
+                if (Math.abs(screenDeltaX) < 2 && Math.abs(screenDeltaY) < 2) {
+                    return;
+                }
+                
+                // Konvertujeme screen koordináty na normalizované
+                const currentScreenX = (event.clientX / window.innerWidth) * 2 - 1;
+                const currentScreenY = -(event.clientY / window.innerHeight) * 2 + 1;
+                
+                // Vytvoríme dva raycasty - počiatočný a aktuálny
+                const rayStart = new THREE.Raycaster();
+                const rayStart2D = new THREE.Vector2(
+                    (lastMouseDownPos.x / window.innerWidth) * 2 - 1,
+                    -(lastMouseDownPos.y / window.innerHeight) * 2 + 1
+                );
+                rayStart.setFromCamera(rayStart2D, camera);
+                
+                const rayEnd = new THREE.Raycaster();
+                const rayEnd2D = new THREE.Vector2(currentScreenX, currentScreenY);
+                rayEnd.setFromCamera(rayEnd2D, camera);
+                
+                // Vypočítame smer pohybu v 3D priestore
+                // Berieme bod na lineStartPoint a počítame smer pohybu
+                const moveDirection = new THREE.Vector3();
+                moveDirection.copy(rayEnd.ray.direction).multiplyScalar(10);
+                moveDirection.sub(rayStart.ray.direction.clone().multiplyScalar(10));
+                moveDirection.normalize();
+                
+                // Zaokrúhlime smer tak aby bol blízko jednotkovému vektoru osí
+                const absX = Math.abs(moveDirection.x);
+                const absY = Math.abs(moveDirection.y);
+                const absZ = Math.abs(moveDirection.z);
+                
+                // Vyberieme dominantnú os
+                moveDirection.set(0, 0, 0);
+                if (absX > absY && absX > absZ) {
+                    moveDirection.x = screenDeltaX > 0 ? 1 : -1;
+                } else if (absY > absX && absY > absZ) {
+                    moveDirection.y = screenDeltaY > 0 ? -1 : 1; // Screen Y je inverzná
+                } else {
+                    moveDirection.z = Math.abs(screenDeltaX) > Math.abs(screenDeltaY) ? (screenDeltaX > 0 ? -1 : 1) : (screenDeltaY > 0 ? 1 : -1);
+                }
+                
+                // Počet kociek na základe vzdialenosti obrazovky
+                const screenDistance = Math.sqrt(screenDeltaX * screenDeltaX + screenDeltaY * screenDeltaY);
+                const numBlocks = Math.max(1, Math.round(screenDistance / 20)); // 20px per block
+                
+                // Zmazeme staré dočasné kocky a vytvoríme nové
+                clearTemporaryVoxels();
+                
+                for (let i = 0; i < numBlocks; i++) {
+                    const newPosition = new THREE.Vector3(
+                        lineStartPoint.x + moveDirection.x * i,
+                        lineStartPoint.y + moveDirection.y * i,
+                        lineStartPoint.z + moveDirection.z * i
+                    );
+                    
+                    // Skontrolujeme, či tam už niečo nie je
+                    const isOccupied = voxels.some(v => v.position.equals(newPosition));
+                    if (!isOccupied) {
+                        // Vytvoríme dočasnú kocku s 50% priehľadnosťou
+                        const tempMaterial = new THREE.MeshLambertMaterial({ 
+                            color: currentVoxelColor,
+                            transparent: true,
+                            opacity: 0.5
+                        });
+                        const tempVoxel = new THREE.Mesh(voxelGeometry, tempMaterial);
+                        tempVoxel.position.copy(newPosition);
+                        scene.add(tempVoxel);
+                        temporaryVoxels.push(tempVoxel);
+                    }
+                }
+            }
         }
 
         function onMouseUp(event) {
-            // Resetujeme flag na začiatku
+            // Ak sme kreslili čiaru
+            if (isDrawingLine) {
+                // Ak je CTRL stále stlačený, finalizujeme dočasné kocky
+                if (isCtrlPressed) {
+                    finalizeTemporaryVoxels();
+                } else {
+                    // Inak ich zmazeme
+                    clearTemporaryVoxels();
+                }
+                isDrawingLine = false;
+                lockedDirection = null;
+                return;
+            }
+            
+            // Resetujeme drawing flag
             isCameraRotating = false;
             
             // Skontrolujeme či klik bol na GUI elemente
@@ -308,6 +484,10 @@
                         if (index > -1) voxels.splice(index, 1);
                         // Zmažeme z dát pre uloženie
                         placedVoxels = placedVoxels.filter(v => v.position.x !== intersect.object.position.x || v.position.y !== intersect.object.position.y || v.position.z !== intersect.object.position.z);
+                        // Vynulujeme highlight ak bola zmazaná highlightovaná kocka
+                        if (highlightedVoxel === intersect.object) {
+                            highlightedVoxel = null;
+                        }
                     }
                 } else {
                     // Režim Pridávania - VYLEPŠENÁ LOGIKA
@@ -332,6 +512,33 @@
             }
             
             isCameraRotating = false;
+        }
+        
+        function clearTemporaryVoxels() {
+            // Zmažeme všetky dočasné kocky zo scény
+            temporaryVoxels.forEach(voxel => {
+                scene.remove(voxel);
+            });
+            temporaryVoxels = [];
+        }
+        
+        function finalizeTemporaryVoxels() {
+            // Konvertujeme dočasné kocky na permanentné
+            temporaryVoxels.forEach(tempVoxel => {
+                // Vytvoríme permanentnú kocku
+                const permanentVoxel = new THREE.Mesh(voxelGeometry, new THREE.MeshLambertMaterial({ color: currentVoxelColor }));
+                permanentVoxel.position.copy(tempVoxel.position);
+                scene.remove(tempVoxel);
+                scene.add(permanentVoxel);
+                voxels.push(permanentVoxel);
+                
+                // Pridáme do dát pre uloženie
+                placedVoxels.push({ 
+                    position: { x: permanentVoxel.position.x, y: permanentVoxel.position.y, z: permanentVoxel.position.z }, 
+                    color: "#" + currentVoxelColor.getHexString() 
+                });
+            });
+            temporaryVoxels = [];
         }
 
         function setupPalette() {
